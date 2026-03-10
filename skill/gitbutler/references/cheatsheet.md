@@ -43,9 +43,22 @@ but status --json -f    # See workspace state
 | `git push --force` | `but push --with-force` | Use carefully |
 | `git reflog` | `but oplog` | More powerful — tracks everything |
 | `git reset --hard` | `but oplog restore <sha>` | Safer, reversible |
+| `git cherry-pick` | `but pick <commit>` | Cherry-pick into applied branch |
 | N/A | `but undo` | Undo last operation |
 | N/A | `but absorb` | Auto-amend to correct commit |
 | N/A | `but pr new <branch> -t` | Push + create PR in one step |
+| N/A | `but merge <branch>` | Merge active branch into upstream (local mode only) |
+
+---
+
+## Setup and Teardown
+
+Switching to and from GitButler branch management.
+
+```bash
+but setup               # Switch to GitButler in the current repository
+but teardown            # Go back to vanilla git branch management
+```
 
 ---
 
@@ -54,22 +67,29 @@ but status --json -f    # See workspace state
 ```bash
 but status --json           # Workspace overview (agent-friendly)
 but status --json -f        # With full file lists
+but status --json -f -v     # Verbose: committed files listed + more detail
+but status -u               # Show detailed list of unintegrated upstream commits
 but show <id> --json        # Details about commit/branch
 but diff <id>               # Diff for file, branch, or commit
+but diff <branch>           # Show changes specific to a branch
 but diff --json             # Diff with hunk IDs (for --changes)
 ```
 
 ---
 
-## Branching
+## Branch Management
+
+Create and manage parallel and stacked branches.
 
 ```bash
+but branch                      # List all branches available
 but branch new <name>           # Independent (parallel) branch
 but branch new <name> -a <id>   # Stacked (dependent) branch
-but branch                      # List all branches
-but apply <id>                  # Activate branch in workspace
-but unapply <id>                # Deactivate branch from workspace
-but branch delete <id>          # Delete branch
+but branch new --anchor <branch>  # Create stacked branch from existing branch
+but apply <id>                  # Activate (enable) branch in workspace
+but unapply <id>                # Deactivate (disable) branch from workspace
+but branch list <search>        # List branches matching search term
+but branch delete <id>          # Delete branch from workspace
 ```
 
 ---
@@ -80,11 +100,17 @@ but branch delete <id>          # Delete branch
 # RECOMMENDED: commit specific files
 but commit <branch> -m "msg" --changes <id>,<id>
 
+# Commit to specific branch (all uncommitted changes)
+but commit <branch> -m "msg"
+
 # Commit only pre-staged files
 but commit <branch> --only -m "msg"
 
-# RISKY: commits ALL uncommitted changes
-but commit <branch> -m "msg"
+# Create a new branch and commit to it in one step
+but commit -c <branch> -m "msg"
+
+# Commit all changes to current branch
+but commit -m "msg"
 ```
 
 **Getting IDs for `--changes`:**
@@ -114,7 +140,7 @@ One command, four operations based on source/target types:
 
 ---
 
-## Editing History
+## Editing History (Commit Editing)
 
 ```bash
 but reword <id> -m "new msg"        # Edit commit message or rename branch
@@ -127,6 +153,8 @@ but absorb <file-id> --dry-run      # Preview absorb
 but move <commit> <target>          # Move commit to different location
 but uncommit <commit-id>            # Uncommit back to unstaged area
 but discard <file-id>               # Discard uncommitted changes
+but commit new --before <commit>    # Insert a blank commit before specified commit
+but pick <commit>                   # Cherry-pick a commit into an applied branch
 ```
 
 ---
@@ -138,13 +166,28 @@ but push <branch>               # Push specific branch
 but push                        # Push all branches with unpushed commits
 but push --dry-run              # Preview what would be pushed
 but pull                        # Fetch and rebase all branches
+but pull --check                # Preview what pull would do without making changes
 but pr new <branch> -t          # Push + create PR (auto-title)
 but pr new <branch> -m "Title"  # Push + create PR with custom message
+but config forge                # View and modify forge authentications
 ```
 
 ---
 
-## Undo & Recovery
+## Conflict Management
+
+```bash
+but resolve <commit-id>     # Enter resolution mode
+# Fix conflicts in files...
+but resolve status           # Check remaining conflicts
+but resolve finish           # Finalize resolution
+but resolve cancel           # Abort, return to workspace
+but merge <branch>           # Merge an active branch into upstream (local mode only)
+```
+
+---
+
+## Undo & Recovery (Operations Log)
 
 ```bash
 but undo                            # Undo last operation (one step back)
@@ -159,25 +202,27 @@ but oplog restore <snapshot-id>     # Restore to any point
 
 ---
 
-## Conflict Resolution
+## Auto-Assignment (Marks)
 
-```bash
-but resolve <commit-id>     # Enter resolution mode
-# Fix conflicts in files...
-but resolve status           # Check remaining conflicts
-but resolve finish           # Finalize resolution
-but resolve cancel           # Abort, return to workspace
-```
-
----
-
-## Marks (Auto-staging)
+Configure automatic file assignment or committing.
 
 ```bash
 but mark <branch-id>            # New changes auto-stage to this branch
 but mark <commit-id>            # New changes auto-amend into this commit
 but mark <id> --delete          # Remove mark
-but unmark                      # Remove all marks
+but unmark                      # Remove all marks from workspace
+```
+
+---
+
+## Helper Commands
+
+```bash
+but gui                 # Open the GUI to the current project
+but alias               # Create and manage aliases for commonly used commands
+but config              # View and modify GitButler configuration settings
+but update              # Check for and install updates to GitButler
+but skill               # Get tips and tricks for using GitButler effectively
 ```
 
 ---

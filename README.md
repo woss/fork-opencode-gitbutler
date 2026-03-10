@@ -44,7 +44,17 @@ brew install gitbutler
 
 See [GitButler installation docs](https://docs.gitbutler.com/installation) for other methods.
 
-### 3. Restart OpenCode
+### 3. Install the GitButler skill (recommended)
+
+The plugin includes a skill that teaches your agent GitButler commands, safety rules, and workflows. Install it as a project-level skill so the agent can load it on demand:
+
+```bash
+npx skills add https://github.com/gaboe/opencode-gitbutler --skill but --agent opencode --yes
+```
+
+> **Why?** The plugin handles automation (auto-branch, auto-commit), but the agent also needs to know how to use `but` commands directly. Without the skill, the agent falls back to raw `git` commands which break the GitButler workspace.
+
+### 4. Restart OpenCode
 
 The plugin automatically:
 - Routes every `edit`/`write` through GitButler's `after-edit`
