@@ -3,6 +3,7 @@ import {
   detectCommitPrefix,
   toCommitMessage,
   toBranchSlug,
+  sanitizePrompt,
   classifyRewordFailure,
   rewordTrackingKey,
   COMMIT_PREFIX_PATTERNS,
@@ -109,6 +110,55 @@ describe("toCommitMessage", () => {
 
   test("handles prompt with only a prefix", () => {
     expect(toCommitMessage("fix:")).toBe("fix: OpenCode session changes");
+  });
+});
+
+describe("sanitizePrompt", () => {
+  test("strips XML-like tags and returns meaningful content", () => {
+    expect(sanitizePrompt("<ultrawork-mode>\nfix the login bug")).toBe("fix the login bug");
+    expect(sanitizePrompt("<system-reminder>\n[GITBUTLER STATE UPDATE]\nfix auth")).toBe("fix auth");
+  });
+
+  test("strips bracket directives", () => {
+    expect(sanitizePrompt("[SYSTEM DIRECTIVE: OH-MY-OPENCODE - TODO CONTINUATION]\nadd retry")).toBe("add retry");
+    expect(sanitizePrompt("[MANDATORY]\n[CODE RED]\nfix crash")).toBe("fix crash");
+  });
+
+  test("strips closing tags too", () => {
+    expect(sanitizePrompt("</system-reminder>\nfix it")).toBe("fix it");
+  });
+
+  test("passes through clean prompts unchanged", () => {
+    expect(sanitizePrompt("fix the login bug")).toBe("fix the login bug");
+    expect(sanitizePrompt("add dark mode toggle")).toBe("add dark mode toggle");
+  });
+
+  test("skips empty/short lines after stripping", () => {
+    expect(sanitizePrompt("<ultrawork-mode>\n\n\nfix it")).toBe("fix it");
+  });
+
+  test("returns empty for pure tags/directives with no meaningful content", () => {
+    expect(sanitizePrompt("<ultrawork-mode>")).toBe("");
+    expect(sanitizePrompt("[SYSTEM DIRECTIVE: test]")).toBe("");
+  });
+
+  test("handles mixed content on same line", () => {
+    expect(sanitizePrompt("<system-reminder> fix the bug")).toBe("fix the bug");
+  });
+
+  test("strips tags from commit-message context", () => {
+    const result = toCommitMessage("<ultrawork-mode>\nfix the login bug");
+    expect(result).toBe("fix: fix the login bug");
+  });
+
+  test("strips tags from branch-slug context", () => {
+    const result = toBranchSlug("<system-reminder>\nfix the login bug", 50);
+    expect(result).toBe("fix-the-login-bug");
+  });
+
+  test("falls back to generic message when all lines are tags", () => {
+    expect(toCommitMessage("<ultrawork-mode>")).toBe("chore: OpenCode session changes");
+    expect(toBranchSlug("<ultrawork-mode>", 50)).toBe("opencode-session");
   });
 });
 

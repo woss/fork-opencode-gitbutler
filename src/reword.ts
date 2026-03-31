@@ -107,11 +107,11 @@ export function detectCommitPrefix(text: string): string {
 }
 
 export function toCommitMessage(prompt: string): string {
-  const firstLine = prompt.split("\n")[0]?.trim() ?? "";
-  if (!firstLine)
+  const cleaned = sanitizePrompt(prompt);
+  if (!cleaned)
     return "chore: OpenCode session changes";
-  const prefix = detectCommitPrefix(firstLine);
-  const description = firstLine
+  const prefix = detectCommitPrefix(cleaned);
+  const description = cleaned
     .replace(
       /^(fix|feat|refactor|test|docs|style|perf|chore)(\(.+?\))?:\s*/i,
       "",
@@ -126,7 +126,8 @@ export function toCommitMessage(prompt: string): string {
 }
 
 export function toBranchSlug(prompt: string, maxLength: number): string {
-  const cleaned = prompt
+  const sanitized = sanitizePrompt(prompt);
+  const cleaned = sanitized
     .replace(/[^a-zA-Z0-9\s-]/g, "")
     .trim()
     .toLowerCase()
@@ -135,6 +136,47 @@ export function toBranchSlug(prompt: string, maxLength: number): string {
     .join("-");
   return cleaned.slice(0, maxLength) || "opencode-session";
 }
+
+/**
+ * Strip system-injected tags and directives from a user prompt,
+ * returning the first meaningful line for commit message / branch slug use.
+ *
+ * Strips: XML-like tags (<system-reminder>, <ultrawork-mode>, etc.),
+ * bracket directives ([SYSTEM ...], [GITBUTLER ...], etc.),
+ * and skips lines that are empty or pure formatting after cleanup.
+ */
+export function sanitizePrompt(text: string): string {
+  const lines = text.split("\n");
+  for (const raw of lines) {
+    const cleaned = raw
+      // Strip XML-like tags (system-reminder, ultrawork-mode, etc.)
+      .replace(/<\/?[a-zA-Z][a-zA-Z0-9_-]*(?:\s[^>]*)?\/?>/g, "")
+      // Strip bracket directives: [SYSTEM ...], [GITBUTLER ...], etc.
+      .replace(
+        /\[(?:SYSTEM|GITBUTLER|BACKGROUND|CODE RED|MANDATORY|CONTEXT|ULTRAWORK|OMO_INTERNAL)[^\]]*\]/gi,
+        "",
+      )
+      .trim();
+    // Skip empty lines, pure markdown separators, and very short fragments
+    if (
+      cleaned.length >= 3 &&
+      !/^[-*#=|>]+$/.test(cleaned) &&
+      !/^\*\*[A-Z]+\*\*:?\s*$/.test(cleaned)
+    ) {
+      return cleaned;
+    }
+  }
+  return "";
+}
+
+export const COMMIT_MODEL_FALLBACKS: ReadonlyArray<{
+  providerID: string;
+  modelID: string;
+}> = [
+  { providerID: "anthropic", modelID: "claude-haiku-4-5" },
+  { providerID: "openai", modelID: "gpt-4.1-mini" },
+  { providerID: "openai", modelID: "gpt-4o-mini" },
+];
 
 export type RewordManager = {
   fetchUserPrompt: (sessionID: string) => Promise<string | null>;
@@ -247,7 +289,7 @@ export function createRewordManager(deps: RewordDeps): RewordManager {
           "Generate a one-line conventional commit message for this diff.",
           "Format: type: description (max 72 chars total).",
           "Types: feat, fix, refactor, test, docs, style, perf, chore.",
-          `User intent: "${userPrompt.split("\n")[0]?.trim().slice(0, 200) ?? ""}"`,
+          `User intent: "${sanitizePrompt(userPrompt).slice(0, 200)}"`,
           "",
           "Diff:",
           truncatedDiff,
@@ -255,81 +297,127 @@ export function createRewordManager(deps: RewordDeps): RewordManager {
           "Reply with ONLY the commit message, nothing else.",
         ].join("\n");
 
-        const timeoutPromise = new Promise<null>(
-          (resolve) =>
-            setTimeout(() => resolve(null), LLM_TIMEOUT_MS),
-        );
+        const primary = {
+          providerID: config.commit_message_provider,
+          modelID: config.commit_message_model,
+        };
+        const modelsToTry = [
+          primary,
+          ...COMMIT_MODEL_FALLBACKS.filter(
+            (m) =>
+              m.providerID !== primary.providerID ||
+              m.modelID !== primary.modelID,
+          ),
+        ];
 
-        const llmPromise = client.session.prompt({
-          path: { id: tempSessionId },
-          body: {
-            model: {
-              providerID: config.commit_message_provider,
-              modelID: config.commit_message_model,
-            },
-            system:
-              "You are a commit message generator. Output ONLY a single-line conventional commit message. No explanation, no markdown, no quotes, no code fences.",
-            tools: {},
-            parts: [
-              { type: "text" as const, text: promptText },
-            ],
-          },
-        });
+        for (const model of modelsToTry) {
+          try {
+            const timeoutPromise = new Promise<null>(
+              (resolve) =>
+                setTimeout(
+                  () => resolve(null),
+                  LLM_TIMEOUT_MS,
+                ),
+            );
 
-        const response = await Promise.race([
-          llmPromise,
-          timeoutPromise,
-        ]);
-        if (
-          !response ||
-          !("data" in response) ||
-          !response.data
-        ) {
-          log.warn("llm-timeout-or-empty", {
-            commitId,
-          });
-          return null;
-        }
+            const llmPromise = client.session.prompt({
+              path: { id: tempSessionId },
+              body: {
+                model,
+                system:
+                  "You are a commit message generator. Output ONLY a single-line conventional commit message. No explanation, no markdown, no quotes, no code fences.",
+                tools: {},
+                parts: [
+                  {
+                    type: "text" as const,
+                    text: promptText,
+                  },
+                ],
+              },
+            });
 
-        const textPart = (
-          response.data as {
-            parts: Array<{ type: string; text?: string }>;
+            const response = await Promise.race([
+              llmPromise,
+              timeoutPromise,
+            ]);
+            if (
+              !response ||
+              !("data" in response) ||
+              !response.data
+            ) {
+              log.warn("llm-timeout-or-empty", {
+                commitId,
+                model: model.modelID,
+              });
+              continue;
+            }
+
+            const textPart = (
+              response.data as {
+                parts: Array<{
+                  type: string;
+                  text?: string;
+                }>;
+              }
+            ).parts.find((p) => p.type === "text");
+            if (!textPart?.text) continue;
+
+            const message = textPart.text
+              .trim()
+              .replace(/^["'`]+|["'`]+$/g, "")
+              .split("\n")[0]
+              ?.trim();
+            if (!message) continue;
+
+            const validPrefix =
+              /^(feat|fix|refactor|test|docs|style|perf|chore|ci|build)(\(.+?\))?:\s/;
+            if (!validPrefix.test(message)) {
+              log.warn("llm-invalid-format", {
+                commitId,
+                model: model.modelID,
+                message,
+              });
+              continue;
+            }
+
+            const finalMessage =
+              message.length > 72
+                ? message.slice(0, 69) + "..."
+                : message;
+
+            log.info("llm-success", {
+              commitId,
+              message: finalMessage,
+              model: `${model.providerID}/${model.modelID}`,
+            });
+            return finalMessage;
+          } catch (modelErr) {
+            log.warn("llm-model-failed", {
+              commitId,
+              providerID: model.providerID,
+              modelID: model.modelID,
+              error:
+                modelErr instanceof Error
+                  ? modelErr.message
+                  : String(modelErr),
+            });
           }
-        ).parts.find((p) => p.type === "text");
-        if (!textPart?.text) return null;
-
-        const message = textPart.text
-          .trim()
-          .replace(/^["'`]+|["'`]+$/g, "")
-          .split("\n")[0]
-          ?.trim();
-        if (!message) return null;
-
-        const validPrefix =
-          /^(feat|fix|refactor|test|docs|style|perf|chore|ci|build)(\(.+?\))?:\s/;
-        if (!validPrefix.test(message)) {
-          log.warn("llm-invalid-format", {
-            commitId,
-            message,
-          });
-          return null;
         }
 
-        if (message.length > 72)
-          return message.slice(0, 69) + "...";
-
-        log.info("llm-success", {
-          commitId,
-          message,
-        });
-        return message;
+        log.warn("llm-all-models-exhausted", { commitId });
+        return null;
       } finally {
         internalSessionIds.delete(tempSessionId);
         client.session
           .delete({ path: { id: tempSessionId } })
           .catch(() => {});
       }
-    } catch {
+    } catch (err) {
+      log.error("llm-error", {
+        commitId,
+        error:
+          err instanceof Error ? err.message : String(err),
+      });
       return null;
     }
   }
@@ -687,18 +775,6 @@ export function createRewordManager(deps: RewordDeps): RewordManager {
       }
     }
 
-    const shouldSetTitle = candidateBranches.length === 1;
-    if (!shouldSetTitle && candidateBranches.length > 1) {
-      log.info("session-title-skipped-ambiguous", {
-        conversationId,
-        rootSessionID,
-        candidateBranches: candidateBranches.map((b) => ({
-          cliId: b.cliId,
-          name: b.name,
-        })),
-      });
-    }
-
     if (candidateBranches.length === 1) {
       const branch = candidateBranches[0]!;
       const syncedBranchName = latestBranchName ?? branch.name;
@@ -727,21 +803,42 @@ export function createRewordManager(deps: RewordDeps): RewordManager {
       }
     }
 
-    if (shouldSetTitle) {
-      const singleBranch = candidateBranches[0]!;
-      const titleToSet = latestBranchName ?? singleBranch.name;
-      if (titleToSet) {
-        client.session
-          .update({
-            path: { id: rootSessionID },
-            body: { title: titleToSet },
-          })
-          .catch(() => {});
-        addNotification(
-          sessionID,
-          `Session title updated to \`${titleToSet}\``,
-        );
+    let titleToSet: string | null = null;
+    if (candidateBranches.length === 1) {
+      titleToSet =
+        latestBranchName ?? candidateBranches[0]!.name;
+    } else if (candidateBranches.length > 1) {
+      const ownerEntry = branchOwnership.get(conversationId);
+      if (latestBranchName) {
+        titleToSet = latestBranchName;
+      } else if (
+        ownerEntry?.branchName &&
+        !ownerEntry.branchName.startsWith("conversation-")
+      ) {
+        titleToSet = ownerEntry.branchName;
       }
+      log.info("session-title-multi-branch", {
+        conversationId,
+        rootSessionID,
+        chosen: titleToSet,
+        candidateBranches: candidateBranches.map((b) => ({
+          cliId: b.cliId,
+          name: b.name,
+        })),
+      });
+    }
+
+    if (titleToSet) {
+      client.session
+        .update({
+          path: { id: rootSessionID },
+          body: { title: titleToSet },
+        })
+        .catch(() => {});
+      addNotification(
+        sessionID,
+        `Session title updated to \`${titleToSet}\``,
+      );
     }
 
     for (const stack of status.stacks) {
