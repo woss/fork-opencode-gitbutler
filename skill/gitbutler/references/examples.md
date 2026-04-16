@@ -255,6 +255,54 @@ but resolve finish
 # Back to normal workspace mode
 ```
 
+## Example 6A: Surgical Repair of a Broken Stacked Branch
+
+**Scenario:** A stacked branch has gone bad after repeated `but resolve` / `but pull` / rebase cycles. GitButler shows many `(no changes)` commits or replayed duplicates, but you still know the intended logical layers.
+
+```bash
+# 1. Freeze the broken refs
+git branch backup/broken-layer-1 feature-layer-1
+git branch backup/broken-layer-2 feature-layer-2
+git stash push -u -m "pre-surgical-repair"
+
+# 2. Inspect patch-equivalent duplicates
+git cherry -v base-branch feature-layer-1
+git log --reverse --oneline base-branch..feature-layer-1
+
+# 3. Rebuild a clean first layer from the correct base
+git checkout -B surgery/layer-1-clean base-branch
+
+# If a commit is clean, cherry-pick it
+git cherry-pick <clean-feature-commit>
+
+# If a commit is contaminated, take only the intended files
+git checkout feature-layer-1 -- \
+  path/to/intended/file-a \
+  path/to/intended/file-b \
+  path/to/intended/file-c
+git commit -m "feat: rebuild clean layer 1 from intended file set"
+
+# 4. Rebuild clean layer 2 on top of clean layer 1
+git checkout -B surgery/layer-2-clean HEAD
+git checkout feature-layer-2 -- \
+  path/to/layer-2/file-a \
+  path/to/layer-2/file-b \
+  path/to/layer-2/file-c
+git commit -m "feat: rebuild clean layer 2 from intended file set"
+
+# 5. Verify before replacing the real refs
+bun run check
+
+# 6. Only now move the real branch refs
+git branch -f feature-layer-1 surgery/layer-1-clean
+git branch -f feature-layer-2 surgery/layer-2-clean
+git push --force-with-lease origin \
+  feature-layer-1:feature-layer-1 \
+  feature-layer-2:feature-layer-2
+```
+
+**Why this works:** Once the stack is polluted by patch-equivalent duplicates or workspace-projection corruption, rebuilding the intended tree deltas is faster and safer than preserving the broken commit chain.
+
 ## Example 7: Complete Feature Development Workflow
 
 **Scenario:** Building a complete feature from start to finish.

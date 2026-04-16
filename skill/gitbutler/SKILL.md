@@ -264,6 +264,11 @@ but absorb                                         # Absorb any auto-formatted c
 | Plugin auto-cleanup misses empty branches | `ge-branch-*` cleanup has ~12% failure rate; user-named empty branches are never auto-cleaned | Run `/b-branch-gc` command or manually `but unapply <branch-id>` |
 | Notifications not reaching agent | Plugin notification delivery is ~55% (259 queued vs 142 delivered in observed sessions) | Always verify state with `but status --json` — don't rely on `<system-reminder>` notifications alone |
 
+| Workspace projection mismatch | `but status` shows a branch/stack, but `but unapply <branch>` or GUI `stack_details` says the stack is not found in the workspace | Treat as **GitButler metadata corruption**, not a git-history problem. Stop mutating in place, capture logs/project/commit graph for support, then use `but teardown` → back up `.git/gitbutler` → `but setup`. If it persists, use a fresh clone/worktree. |
+| Many `(no changes)` commits after repeated resolve/rebase | A stack accumulates synthetic commits that are patch-equivalent to upstream or replayed duplicates | Do **not** keep resolving in place. Freeze refs, identify patch-equivalent commits with `git cherry -v` and rebuild clean branches from the logical base instead of preserving the broken history. |
+| Applying one stack auto-unapplies another | GitButler says it had to unapply another stack to apply the requested one | The stacks overlap in content or ancestry. Unapply the currently active conflicting stack first, or rebuild the intended stack boundaries so only one logical chain remains applied at a time. |
+| `but push` blocked by projection errors | Workspace/stack metadata is broken but the raw git refs are healthy | If the goal is to repair remote ancestry, verify branch refs with raw git and use `git push --force-with-lease` as a last resort. Afterwards return to `gitbutler/workspace` and reinitialize metadata with `but setup`. |
+
 ### Diagnosing `zz` Stuck Files
 
 When files are stuck in `zz` (unassigned) and don't auto-recover:
@@ -288,6 +293,50 @@ When files are stuck in `zz` (unassigned) and don't auto-recover:
    - This is the most reliable recovery method
 
 **Key insight:** Auto-recovery won't fix multi-branch locked files. If you see `[LOCKED]` in `zz`, manual intervention is required.
+
+### Surgical Repair for Broken Stacks
+
+When a stack is too damaged for normal `but resolve` to converge quickly — for example:
+
+- repeated `conflicted` commits keep reappearing,
+- `git cherry -v` shows lots of patch-equivalent duplicates,
+- GitButler shows many commits marked `(no changes)`,
+- or a single commit drags `.auto-resolution/**` or other obvious snapshot junk,
+
+use **surgical repair** instead of trying to preserve the broken history.
+
+#### When surgical repair is the right move
+
+- The raw git graph is understandable, but GitButler metadata/history replay is not.
+- You can clearly identify the intended logical layers of the work, even if the current branch history no longer reflects them cleanly.
+- A mixed commit contains the real feature files plus obvious accidental junk.
+
+#### Surgical repair workflow
+
+1. **Freeze everything first**
+   - Create backup refs for the current broken branches.
+   - Stash any workspace dirt/hook refresh noise.
+
+2. **Find the clean logical base**
+   - Use `git cherry -v <base> <branch>` to separate patch-equivalent duplicates from truly unique commits.
+   - Use `git log --reverse <base>..<branch>` to see the branch's commit layers in order.
+
+3. **Rebuild from clean bases, not from broken branch history**
+   - Create scratch branches from the intended base.
+   - Cherry-pick only clean commits.
+   - If a commit is contaminated (for example adds `.auto-resolution/**`), do **file-level checkout** of only the intended paths from that commit or from the existing branch tip, then create a new clean commit.
+
+4. **Validate each rebuilt layer independently**
+   - Compare file deltas between layers with `git diff --name-only <base>..<layer>`.
+   - Run the project verification (`bun run check`, build/tests/analyzers, etc.) on the rebuilt stack before replacing refs.
+
+5. **Replace refs only after the clean stack is proven**
+   - Move the real branch refs to the rebuilt scratch refs.
+   - Force-push with `--force-with-lease` only after ancestry and checks are confirmed.
+
+#### Why this is fast in practice
+
+Surgical repair sounds heavier than repeated conflict resolution, but once the stack crosses into duplicated replay / `(no changes)` / metadata-corruption territory, rebuilding the logical deltas is usually faster and safer than preserving every historical artifact.
 
 ## Critical Safety Rules
 
